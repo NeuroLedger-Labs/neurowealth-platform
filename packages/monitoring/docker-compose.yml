@@ -1,0 +1,86 @@
+version: "3.8"
+
+services:
+  # No healthcheck here: this image's Dockerfile HEALTHCHECK targets
+  # http://localhost:3000/health, but `npm start` runs dist/index.js, which
+  # only re-exports VaultMonitor/MetricsCollector/etc. for external
+  # consumers - it never constructs a VaultMonitor or calls its start()
+  # method, so nothing ever listens on port 3000. A docker-compose
+  # healthcheck that reused that same assumption would always report
+  # unhealthy and loop-restart a process that isn't actually broken, which
+  # is worse than no healthcheck. Wiring an actual run loop (constructing
+  # and starting a VaultMonitor from this entrypoint, and giving it an HTTP
+  # health/metrics surface) is a separate, larger change than this issue's
+  # docker-compose healthchecks scope.
+  neurowealth-monitor:
+    build: .
+    container_name: neurowealth-monitor
+    environment:
+      VAULT_CONTRACT_ID: ${VAULT_CONTRACT_ID}
+      SOROBAN_RPC_URL: ${SOROBAN_RPC_URL:-https://soroban.stellar.org}
+      SOROBAN_NETWORK_PASSPHRASE: ${SOROBAN_NETWORK_PASSPHRASE:-Public Global Stellar Network ; Stellar Development Foundation}
+      POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-30}
+      TVL_DROP_PERCENTAGE: ${TVL_DROP_PERCENTAGE:-20}
+      WITHDRAWAL_SPIKE_FACTOR: ${WITHDRAWAL_SPIKE_FACTOR:-3}
+      PAUSE_DURATION_LEDGERS: ${PAUSE_DURATION_LEDGERS:-17280}
+      CAP_SATURATION_PERCENTAGE: ${CAP_SATURATION_PERCENTAGE:-95}
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
+      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL}
+      TELEGRAM_WEBHOOK_URL: ${TELEGRAM_WEBHOOK_URL}
+      METRICS_BACKEND_URL: ${METRICS_BACKEND_URL}
+    restart: unless-stopped
+    networks:
+      - neurowealth
+    volumes:
+      - ./logs:/app/logs
+
+  # Optional: Prometheus for metrics collection
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: neurowealth-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    networks:
+      - neurowealth
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/healthy || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Optional: Grafana for visualization
+  grafana:
+    image: grafana/grafana:latest
+    container_name: neurowealth-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    networks:
+      - neurowealth
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      prometheus:
+        condition: service_healthy
+
+networks:
+  neurowealth:
+    driver: bridge
+
+volumes:
+  prometheus_data:
+  grafana_data:
